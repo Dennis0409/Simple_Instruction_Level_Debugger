@@ -40,8 +40,7 @@ void errquit(const char *msg) {
 	exit(-1);
 }
 
-void
-print_instruction(long long addr, instruction1 *in) {
+void print_instruction(long long addr, instruction1 *in) {
 	if(addr>end_text-1&&out_r==0){
 		printf("** the address is out of the range of the text section.\n");
 		out_r=1;
@@ -60,8 +59,7 @@ print_instruction(long long addr, instruction1 *in) {
 	}
 }
 
-void
-disassemble(pid_t proc, unsigned long long rip) {
+void disassemble(pid_t proc, unsigned long long rip) {
 	int count;
 	char buf[100000] = { 0 };
 	unsigned long long ptr = rip;
@@ -111,8 +109,7 @@ disassemble(pid_t proc, unsigned long long rip) {
 	return;
 }
 
-int
-main(int argc, char *argv[]) {
+int main(int argc, char *argv[]) {
     std::ifstream file(argv[1], std::ios::binary);
 
     if (!file) {
