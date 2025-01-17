@@ -6,19 +6,17 @@
 #include <sys/wait.h>
 #include <sys/ptrace.h>
 #include <sys/user.h>
-#include<sys/mman.h>
+#include <sys/mman.h>
 #include <capstone/capstone.h>
-
 #include "ptools.h"
-#include<iostream>
-
+#include <iostream>
 #include <map>
-
 #include <sstream>
 #include <fstream>
 #include <vector>
 #include <elf.h>
 #include <cstring>
+
 using namespace std;
 
 #define	PEEKSIZE	8
@@ -30,23 +28,23 @@ public:
 	string opr, opnd;
 };
 
-static csh cshandle = 0;
 static map<long long, instruction1> instructions;
 static long long base=0;
 static long long end_text=0;
-static int out_r=0;
+static int out_of_memory=0;
+
 void errquit(const char *msg) {
 	perror(msg);
 	exit(-1);
 }
 
-void
-print_instruction(long long addr, instruction1 *in) {
-	if(addr>end_text-1&&out_r==0){
+void print_instruction(long long addr, instruction1 *in) {
+	//fprintf(stderr,"%llx\n",addr);
+	if(addr>end_text-1&&out_of_memory==0){
 		printf("** the address is out of the range of the text section.\n");
-		out_r=1;
+		out_of_memory=1;
 		return ;
-	}else if(out_r==1) return ;
+	}else if(out_of_memory==1) return ;
 	//printf("addr:%llu\n",addr);
 	int i;
 	char bytes[128] = "";
@@ -56,64 +54,61 @@ print_instruction(long long addr, instruction1 *in) {
 		for(i = 0; i < in->size; i++) {
 			snprintf(&bytes[i*3], 4, "%2.2x ", in->bytes[i]);
 		}
+		
 		fprintf(stderr, "0x%012llx: %-32s\t%-10s%s\n", addr, bytes, in->opr.c_str(), in->opnd.c_str());
 	}
 }
 
-void
-disassemble(pid_t proc, unsigned long long rip) {
+void disassemble(pid_t proc, unsigned long long rip,unsigned long long end) {
 	int count;
 	char buf[100000] = { 0 };
 	unsigned long long ptr = rip;
 	cs_insn *insn;
-	//map<long long, instruction1>::iterator mi; // from memory addr to instruction
-
-	//if((mi = instructions.find(rip)) != instructions.end()) {
-	//	cout<<"found\n";
-	//	print_instruction(rip, &mi->second);
-	//	return;
-	//}
+	csh cshandle = 0;
 	if(cs_open(CS_ARCH_X86, CS_MODE_64, &cshandle) != CS_ERR_OK)
 		return ;
-	for(ptr = rip; ptr < rip + sizeof(buf); ptr += PEEKSIZE) {
-		//fprintf(stderr,"ptr:%lld\n",ptr);
+	for(ptr = rip; ptr < end; ptr += PEEKSIZE) {
 		long long peek;
 		errno = 0;
 		peek = ptrace(PTRACE_PEEKTEXT, proc, ptr, NULL);
-		
 		if(errno != 0) break;
 		memcpy(&buf[ptr-rip], &peek, PEEKSIZE);
 		
 	}
-	//fprintf(stderr,"out\n");
+
 	if(ptr == rip)  {
 		print_instruction(rip, NULL);
 		return;
 	}
-
+	
 	if((count = cs_disasm(cshandle, (uint8_t*) buf, ptr-rip, rip, 0, &insn)) > 0) {
 		int i;
-		//fprintf(stderr,"count:%d\n",count);
 		for(i = 0; i < count; i++) {
 			instruction1 in;
 			in.size = insn[i].size;
 			in.opr  = insn[i].mnemonic;
 			in.opnd = insn[i].op_str;
-			//fprintf(stderr,"rip:%012llx  insn[i]:%012llx  size:\n",rip,insn[i].address,in.size);
+			// fprintf(stderr,"rip:%012llx  insn[i]:%012llx  size:\n",rip,insn[i].address,in.size);
 			memcpy(in.bytes, insn[i].bytes, insn[i].size);
 			instructions[insn[i].address] = in;
+			
 		}
 		cs_free(insn, count);
 	}
-
 	
-
 	return;
 }
 
-int
-main(int argc, char *argv[]) {
-    std::ifstream file(argv[1], std::ios::binary);
+void print_5_instruction(unsigned long rip){
+	auto it = instructions.find(rip);
+	for(int i=0;i<5;i++){
+		print_instruction(it->first,&(it->second));
+		it++;
+	}
+}
+
+int get_base_addr(char* argv){
+	std::ifstream file(argv, std::ios::binary);
 
     if (!file) {
         std::cerr << "無法開啟檔案" << std::endl;
@@ -149,32 +144,28 @@ main(int argc, char *argv[]) {
         }
     }
 
-    // 輸出 .text 節頭的所有資訊
-    //std::cout << ".text 節頭的資訊：" << std::endl;
-    //std::cout << "名稱： " << &shstrtab[text_shdr.sh_name] << std::endl;
-    //std::cout << "類型： " << text_shdr.sh_type << std::endl;
-    //std::cout << "位元組偏移量： " << text_shdr.sh_offset << std::endl;
-    //std::cout << "大小： " << text_shdr.sh_size << std::endl;
 	base=text_shdr.sh_addr;
 	end_text=base+text_shdr.sh_size;
-	//printf("end:%llu\n",end_text);
-	pid_t child;
+	// fprintf(stderr,"base : %12llx end_text : %12llx \n",base,end_text);
+	return 0;
+}
+
+int main(int argc, char *argv[]) {
+	if(get_base_addr(argv[1])) return 1;
 	if(argc < 2) {
 		fprintf(stderr, "usage: %s program [args ...]\n", argv[0]);
 		return -1;
 	}
+	pid_t child;
 	if((child = fork()) < 0) errquit("fork");
 	if(child == 0) {
 		if(ptrace(PTRACE_TRACEME, 0, 0, 0) < 0) errquit("ptrace@child");
 		execvp(argv[1], argv+1);
 		errquit("execvp");
 	} else {
-		//long long counter = 0LL;
 		int wait_status;
 		map<range_t, map_entry_t> m;
 		map<range_t, map_entry_t>::iterator mi;
-
-		
 
 		if(waitpid(child, &wait_status, 0) < 0) errquit("waitpid");
 		ptrace(PTRACE_SETOPTIONS, child, 0, PTRACE_O_EXITKILL);
@@ -189,166 +180,97 @@ main(int argc, char *argv[]) {
 #endif
 			fprintf(stderr, "## %zu map entries loaded.\n", m.size());
 		}
-		disassemble(child,base);
+		
+		disassemble(child,base,end_text);
 		map<unsigned long,long >addr_break;
-		//map<unsigned long ,long >travel_break;
 		string cmd;
 		struct user_regs_struct travel_regs;
 		map<pair<unsigned long,unsigned long>,vector<unsigned long long>>travel_mem;
-		//unsigned long addr_break=0;
 		struct user_regs_struct regs_start;
-		if(ptrace(PTRACE_GETREGS,child,0,&regs_start)==0){
-			//range_t r_start ={regs_start.rip,regs.rip};
-			//disassemble(child,regs_start.rip);
-			map<long long,instruction1>::iterator start_it;
-			int count=0;
-			start_it=instructions.find(regs_start.rip);
-			for(map<long long, instruction1>::iterator aa=start_it;aa!=instructions.end();aa++) {
-						
-				print_instruction((*aa).first,&((*aa).second));
 
-				count++;
-				if(count==5) break;
-			
-			}
-		}
+		if(ptrace(PTRACE_GETREGS,child,0,&regs_start)!=0) errquit("Getregs error");
+		print_5_instruction(regs_start.rip);
 		while (cerr<<"(sdb) ") {
 			if(!getline(cin,cmd)) break;
 			size_t found;
 			//unsigned long code;
 			if(cmd=="si"){
-				int start_have_break=0;
 				struct user_regs_struct regs;
 				ptrace(PTRACE_GETREGS,child,0,&regs);
 				//fprintf(stderr, "before si:0x%llx\n", regs.rip);
-				for(auto [target,code_ori]:addr_break){
-					if(target==regs.rip){
-						unsigned long code_target=ptrace(PTRACE_PEEKTEXT,child,target,0);
-						code_ori=code_ori & 0xff;
-						if(ptrace(PTRACE_POKETEXT,child,target,(code_target & 0xffffffffffffff00) | code_ori)!=0) errquit("poketext");
-						start_have_break=1;
-						
-						//ptrace(PTRACE_SETREGS,child,0,&regs);
-						if(ptrace(PTRACE_SINGLESTEP,child,0,0)<0) errquit("singlestep");
-						if(waitpid(child, &wait_status, 0) < 0) errquit("waitpid");
-						if(ptrace(PTRACE_POKETEXT,child,target,code_target)!=0) errquit("ptrace poketext");
-					}
-				}
-				if(start_have_break==0){
-					ptrace(PTRACE_SINGLESTEP,child,0,0);
+				if(addr_break.find(regs.rip)!=addr_break.end()){
+					
+					unsigned long code_target=ptrace(PTRACE_PEEKTEXT,child,regs.rip,0);
+					unsigned long code_ori=addr_break[regs.rip] & 0xff;
+					if(ptrace(PTRACE_POKETEXT,child,regs.rip,(code_target & 0xffffffffffffff00) | code_ori)!=0) errquit("poketext");
+					
+					//ptrace(PTRACE_SETREGS,child,0,&regs);
+					if(ptrace(PTRACE_SINGLESTEP,child,0,0)<0) errquit("singlestep");
+					if(waitpid(child, &wait_status, 0) < 0) errquit("waitpid");
+					if(ptrace(PTRACE_POKETEXT,child,regs.rip,code_target)!=0) errquit("ptrace poketext");
+					
+				}else{
+					if(ptrace(PTRACE_SINGLESTEP,child,0,0)<0) errquit("singlestep");
 					if(waitpid(child, &wait_status, 0) < 0) errquit("waitpid");
 				}
-				
 				
 				if(WIFEXITED(wait_status)){
 					cerr<<"** the target program terminated.\n";
 					return 0;
 				}
-				if(ptrace(PTRACE_GETREGS, child, 0, &regs) == 0) {
-					//fprintf(stderr, "0x%llx\n", regs.rip);
-					range_t r = { regs.rip, regs.rip };
-					mi = m.find(r);
-					if(mi == m.end()) {
-						m.clear();
-						load_maps(child, m);
-						fprintf(stderr, "## %zu map entries re-loaded.\n", m.size());
-						mi = m.find(r);
-					}
-					for(auto [target,code_ori]:addr_break){
-						if(target==regs.rip){
-							fprintf(stderr,"** hit a breakpoint 0x%012llx.\n",target);
-
-						}
-					}
-					//disassemble(child, regs.rip);
-					map<long long, instruction1>::iterator a;
-					//fprintf(stderr,"----------------\n");
-					int count=0;
-					a=instructions.find(regs.rip);
-					for(map<long long, instruction1>::iterator aa=a;aa!=instructions.end();aa++) {
-						
-						print_instruction((*aa).first,&((*aa).second));
-
-						count++;
-						if(count==5) break;
-			
-					}
-					out_r=0;
-					
-				}else errquit("getregs_si");
+				if(ptrace(PTRACE_GETREGS, child, 0, &regs) != 0) errquit("Getregs error");
 				
-				
+				if(addr_break.find(regs.rip)!=addr_break.end()){
+					fprintf(stderr,"** hit a breakpoint 0x%012llx.\n",regs.rip);
+				}
+				print_5_instruction(regs.rip);
+				out_of_memory=0;
+
 			}
 			else if((found=cmd.find("break"))!=string::npos){
 				unsigned long addr_break_temp=stoul(cmd.substr(found+6),nullptr,16);
-				
 				unsigned long code=ptrace(PTRACE_PEEKTEXT,child,addr_break_temp,0);
 				addr_break[addr_break_temp]=code;
 				fprintf(stderr,"** set a breakpoint at 0x%012llx\n",addr_break_temp);
 				if(ptrace(PTRACE_POKETEXT,child,addr_break_temp,(code & 0xffffffffffffff00)|0xcc)!=0){
 					errquit("ptrace(POKETEXT)");
 				}
-				//if(waitpid(child, &wait_status, 0) < 0) errquit("waitpid");
 				
 			}else if(cmd=="cont"){
 				struct user_regs_struct regs;
-				if(ptrace(PTRACE_GETREGS,child,0,&regs)==0){
-					//fprintf(stderr,"rip:0x%012llx\n",regs.rip);
-					for(auto [addr,code_ori]:addr_break){
-						if(addr==regs.rip){
-							code_ori=code_ori & 0xff;
-							unsigned long target_code=ptrace(PTRACE_PEEKTEXT,child,addr,0);
-							if(ptrace(PTRACE_POKETEXT,child,addr,(target_code & 0xffffffffffffff00)|code_ori)!=0){
-								errquit("ptrace(POKETEXT)");
-							}
-
-							if(ptrace(PTRACE_SINGLESTEP, child, 0, 0) < 0) {
-								errquit("singlestep");
-							}
-							if(waitpid(child, &wait_status, 0) < 0) errquit("waitpid");
-							
-							if(ptrace(PTRACE_POKETEXT,child,addr,target_code)!=0) errquit("ptrace(POKETEXT)");
-							
-						}
-					}
+				ptrace(PTRACE_GETREGS,child,0,&regs);
+				if(addr_break.find(regs.rip)!=addr_break.end()){
+					unsigned long code_target=ptrace(PTRACE_PEEKTEXT,child,regs.rip,0);
+					unsigned long code_ori=addr_break[regs.rip] & 0xff;
+					if(ptrace(PTRACE_POKETEXT,child,regs.rip,(code_target & 0xffffffffffffff00) | code_ori)!=0) errquit("poketext");
 					
-					if(ptrace(PTRACE_CONT,child,0,0)!=0) errquit("ptrace(cont)");
-
-					while(waitpid(child,&wait_status,0)>0){
-						if(WIFEXITED(wait_status)){
-							cerr<<"** the target program terminated.\n";
-							return 0;
-						}
-						if(!WIFSTOPPED(wait_status)){
-							continue;
-						}
-						
-						if(ptrace(PTRACE_GETREGS,child,0,&regs)!=0) errquit("getregs");
-
-						//fprintf(stderr,"stop 0x%012llx.\n",regs.rip);
-						for(auto [addr,code_ori]:addr_break){
-							if(addr==regs.rip-1){
-								fprintf(stderr,"** hit a breakpoint 0x%012llx.\n",addr);
-
-								map<long long, instruction1>::iterator a;
-								int count=0;						
-								a=instructions.find(regs.rip-1);
-								
-								for(map<long long, instruction1>::iterator aa=a;aa!=instructions.end();aa++) {			
-									print_instruction((*aa).first,&((*aa).second));
-									count++;
-									if(count==5) break;	
-								}
-								out_r=0;
-								regs.rip=regs.rip-1;
-								if(ptrace(PTRACE_SETREGS,child,0,&regs)!=0) errquit("setregs");
-								
-							}
-						}
-						break;
-					}
-					
+					//ptrace(PTRACE_SETREGS,child,0,&regs);
+					if(ptrace(PTRACE_SINGLESTEP,child,0,0)<0) errquit("singlestep");
+					if(waitpid(child, &wait_status, 0) < 0) errquit("waitpid");
+					if(ptrace(PTRACE_POKETEXT,child,regs.rip,code_target)!=0) errquit("ptrace poketext");
 				}
+
+				if(ptrace(PTRACE_CONT,child,0,0)!=0) errquit("ptrace(cont)");
+
+				while(waitpid(child,&wait_status,0)>0){
+					if(WIFEXITED(wait_status)){
+						cerr<<"** the target program terminated.\n";
+						return 0;
+					}
+					if(!WIFSTOPPED(wait_status)){
+						continue;
+					}
+					
+					if(ptrace(PTRACE_GETREGS,child,0,&regs)!=0) errquit("getregs");
+					if(addr_break.find(regs.rip-1)!=addr_break.end()){
+						fprintf(stderr,"** hit a breakpoint 0x%012llx.\n",regs.rip-1);
+						print_5_instruction(regs.rip-1);
+						regs.rip--;
+						if(ptrace(PTRACE_SETREGS,child,0,&regs)!=0) errquit("setregs");
+					}
+					break;
+				}
+					
 			}else if(cmd=="anchor"){
 				fprintf(stderr,"** dropped an anchor\n");
 				//store current register
@@ -375,7 +297,6 @@ main(int argc, char *argv[]) {
 
 					for (auto addr=start;addr<end; addr += sizeof(unsigned long long)) {
 						unsigned long long data = ptrace(PTRACE_PEEKDATA, child, addr, nullptr);
-						//map<pair<unsigned long,unsigned long>,vector<unsigned long long>> travel_mem;
 						travel_mem[{start,end}].push_back(data);
 					}
 				}
@@ -404,23 +325,10 @@ main(int argc, char *argv[]) {
 						fprintf(stderr,"** hit a breakpoint 0x%012llx.\n",addr);
 					}
 				}
-
-				//print 5 instruction
-				map<long long, instruction1>::iterator a;
-				int count=0;					
-				a=instructions.find(travel_regs.rip);
-				for(map<long long, instruction1>::iterator aa=a;aa!=instructions.end();aa++) {			
-					print_instruction((*aa).first,&((*aa).second));
-					count++;
-					if(count==5) break;	
-				}
-				out_r=0;
-			}
-			
+				print_5_instruction(travel_regs.rip);
+				out_of_memory=0;
+			}else fprintf(stderr,"Please input si, break (address), cont, anchor or timetravel\n");
 		}
-
-		
-		//cs_close(&cshandle);
 	}
 	return 0;
 }

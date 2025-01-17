@@ -13,8 +13,7 @@ bool operator<(range_t r1, range_t r2) {
 	return false;
 }
 
-int
-load_maps(pid_t pid, map<range_t, map_entry_t>& loaded) {
+int load_maps(pid_t pid, map<range_t, map_entry_t>& loaded) {
 	char fn[128];
 	char buf[256];
 	FILE *fp;
