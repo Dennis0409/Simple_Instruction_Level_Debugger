@@ -1,4 +1,10 @@
 # UNIX_PTRACE
+Use PTRACE to implement an instruction-level debugger
+### disassemble:
+1.address, eg:```0x4000b0```
+2.raw instruction, eg:```b8 04 00 00 00```
+3.mnemonic, eg:```mov```
+4.operands of the instruction, eg:```eax, 4```
 ### 1. Si
 ```
 bash$ ./sdb ./hello64
